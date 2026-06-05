@@ -6,109 +6,137 @@ import org.openqa.selenium.WebElement;
 import org.openqa.selenium.chrome.ChromeDriver;
 import org.openqa.selenium.chrome.ChromeOptions;
 
+import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileReader;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.nio.charset.StandardCharsets;
 
 public class App {
+
+    // Вспомогательный метод для настройки браузера (устанавливает папку для скачивания)
+    private static ChromeOptions createBrowserOptions(String downloadDirPath) {
+        Map<String, Object> preferences = new HashMap<>();
+        preferences.put("download.default_directory", downloadDirPath);
+        preferences.put("download.prompt_for_download", false);
+        preferences.put("plugins.always_open_pdf_externally", true);
+
+        ChromeOptions chromeOptions = new ChromeOptions();
+        chromeOptions.setExperimentalOption("prefs", preferences);
+        return chromeOptions;
+    }
+
     public static void main(String[] args) {
-        Path dataPath = Paths.get("data", "data.txt");
-        Path resultDir = Paths.get("result").toAbsolutePath();
+        // Определяем пути к данным и результату
+        Path sourceDataPath = Paths.get("data", "data.txt");
+        Path outputDirPath = Paths.get("result").toAbsolutePath();
+
+        List<String> cdInfo = new ArrayList<>();
+
+        // Читаем файл с данными через BufferedReader
+        try (BufferedReader reader = new BufferedReader(new FileReader(sourceDataPath.toFile()))) {
+            String currentLine;
+            while ((currentLine = reader.readLine()) != null) {
+                cdInfo.add(currentLine.trim());
+            }
+        } catch (IOException e) {
+            System.err.println("Ошибка при чтении файла data.txt: " + e.getMessage());
+            return;
+        }
+
+        if (cdInfo.size() < 2) {
+            System.out.println("Недостаточно данных в файле data.txt");
+            return;
+        }
+
+        String artistName = cdInfo.get(0);
+        String albumTitle = cdInfo.get(1);
 
         try {
-            List<String> lines = Files.readAllLines(dataPath, StandardCharsets.UTF_8);
-            if (lines.isEmpty()) {
-                System.out.println("Data file is empty.");
-                return;
-            }
+            // Убеждаемся, что папка result существует
+            Files.createDirectories(outputDirPath);
 
-            String artist = lines.size() > 0 ? lines.get(0).trim() : "";
-            String title = lines.size() > 1 ? lines.get(1).trim() : "";
+            // Удаляем старые PDF файлы, если они есть
+            File finalPdfFile = new File(outputDirPath.toFile(), "cd.pdf");
+            if (finalPdfFile.exists()) finalPdfFile.delete();
+            File tempDownloadedPdf = new File(outputDirPath.toFile(), "papercdcase.pdf");
+            if (tempDownloadedPdf.exists()) tempDownloadedPdf.delete();
 
-            // Ensure the result directory exists
-            Files.createDirectories(resultDir);
-
-            // Clean up any old cd.pdf
-            File targetFile = new File(resultDir.toFile(), "cd.pdf");
-            if (targetFile.exists()) {
-                targetFile.delete();
-            }
-            File defaultPdf = new File(resultDir.toFile(), "papercdcase.pdf");
-            if (defaultPdf.exists()) {
-                defaultPdf.delete();
-            }
-
-            // Setup ChromeOptions to download directly to the result directory
-            ChromeOptions options = new ChromeOptions();
-            Map<String, Object> prefs = new HashMap<>();
-            prefs.put("download.default_directory", resultDir.toString());
-            prefs.put("download.prompt_for_download", false);
-            prefs.put("plugins.always_open_pdf_externally", true); // Ensure PDF is downloaded, not opened in viewer
-            options.setExperimentalOption("prefs", prefs);
-
-            WebDriver driver = new ChromeDriver(options);
+            // Инициализация WebDriver с заданными настройками
+            ChromeOptions browserConfig = createBrowserOptions(outputDirPath.toString());
+            WebDriver webDriver = new ChromeDriver(browserConfig);
 
             try {
-                driver.get("http://www.papercdcase.com/");
+                // Открываем целевую страницу
+                webDriver.get("http://www.papercdcase.com/");
 
-                WebElement artistInput = driver.findElement(By.xpath("//input[@name='artist']"));
-                artistInput.sendKeys(artist);
+                // Заполнение полей формы с использованием XPath
+                WebElement cdArtistElem = webDriver.findElement(By.xpath("//input[@name='artist']"));
+                cdArtistElem.sendKeys(artistName);
 
-                WebElement titleInput = driver.findElement(By.xpath("//input[@name='title']"));
-                titleInput.sendKeys(title);
+                WebElement albumTitleElem = webDriver.findElement(By.xpath("//input[@name='title']"));
+                albumTitleElem.sendKeys(albumTitle);
 
-                for (int i = 2; i < lines.size(); i++) {
-                    int trackNumber = i - 1;
-                    if (trackNumber > 16) break; // Maximum 16 tracks supported by the website
-                    String trackXPath = "//input[@name='track" + trackNumber + "']";
-                    WebElement trackInput = driver.findElement(By.xpath(trackXPath));
-                    trackInput.sendKeys(lines.get(i).trim());
+                // Заполнение списка треков
+                int trackIdx = 2;
+                while (trackIdx < cdInfo.size() && trackIdx <= 17) {
+                    int formTrackNumber = trackIdx - 1;
+                    String xpathLocator = "//input[@name='track" + formTrackNumber + "']";
+                    WebElement trackInputField = webDriver.findElement(By.xpath(xpathLocator));
+                    trackInputField.sendKeys(cdInfo.get(trackIdx));
+                    trackIdx++;
                 }
 
-                WebElement a4Radio = driver.findElement(By.xpath("//input[@value='a4']"));
-                a4Radio.click();
+                // Выбор переключателей (формат A4 и Jewel Case)
+                WebElement paperFormatRadio = webDriver.findElement(By.xpath("//input[@value='a4']"));
+                paperFormatRadio.click();
 
-                WebElement jewelRadio = driver.findElement(By.xpath("//input[@value='jewel']"));
-                jewelRadio.click();
+                WebElement caseTypeRadio = webDriver.findElement(By.xpath("//input[@value='jewel']"));
+                caseTypeRadio.click();
 
-                WebElement submitBtn = driver.findElement(By.xpath("//input[@name='submit']"));
-                submitBtn.submit(); // Submit the form to generate PDF
+                // Отправка формы (генерация обложки)
+                WebElement generateCoverBtn = webDriver.findElement(By.xpath("//input[@name='submit']"));
+                generateCoverBtn.submit();
 
-                // Wait for the file to be downloaded
-                File dir = resultDir.toFile();
-                File downloadedPdf = null;
-                for (int attempt = 0; attempt < 30; attempt++) {
-                    Thread.sleep(1000); // Check every second for up to 30 seconds
-                    
-                    File[] files = dir.listFiles((d, name) -> name.endsWith(".pdf") && !name.equals("cd.pdf"));
-                    if (files != null && files.length > 0) {
-                        downloadedPdf = files[0];
+                // Ожидание загрузки сформированного PDF-файла
+                File downloadDir = outputDirPath.toFile();
+                File generatedPdfFile = null;
+                
+                int waitAttempts = 0;
+                while (waitAttempts < 30) {
+                    Thread.sleep(1000);
+                    File[] dirFiles = downloadDir.listFiles((dir, name) -> name.endsWith(".pdf") && !name.equals("cd.pdf"));
+                    if (dirFiles != null && dirFiles.length > 0) {
+                        generatedPdfFile = dirFiles[0];
                         break;
                     }
+                    waitAttempts++;
                 }
 
-                if (downloadedPdf != null) {
-                    boolean renamed = downloadedPdf.renameTo(targetFile);
-                    if (renamed) {
-                        System.out.println("PDF generated and saved to result/cd.pdf successfully.");
+                // Переименование полученного файла в cd.pdf
+                if (generatedPdfFile != null) {
+                    if (generatedPdfFile.renameTo(finalPdfFile)) {
+                        System.out.println("Файл успешно скачан и сохранен как result/cd.pdf");
                     } else {
-                        System.out.println("Downloaded PDF found but could not be renamed.");
+                        System.out.println("Не удалось переименовать скачанный файл.");
                     }
                 } else {
-                    System.out.println("Error: Failed to download the PDF within the timeout.");
+                    System.out.println("Превышено время ожидания скачивания PDF.");
                 }
 
             } finally {
-                driver.quit();
+                // Закрываем браузер
+                webDriver.quit();
             }
 
-        } catch (Exception e) {
-            e.printStackTrace();
+        } catch (Exception ex) {
+            ex.printStackTrace();
         }
     }
 }
